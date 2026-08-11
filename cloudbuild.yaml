@@ -38,5 +38,9 @@ substitutions:
 options:
   machineType: E2_HIGHCPU_8
   diskSizeGb: 100
+  # Log to Cloud Logging (not the default GCS bucket) so the CD service account
+  # — which is not a project Viewer/Owner — can submit builds without hitting the
+  # "can only stream logs if you are Viewer/Owner" error.
+  logging: CLOUD_LOGGING_ONLY
 
 timeout: 3000s
