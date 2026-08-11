@@ -1,5 +1,14 @@
 # Production RAG
 
+> **🚀 Live demo** (GCP Cloud Run)
+> - **UI:** https://rag-ui-amqkulvgza-uc.a.run.app
+> - **API:** https://rag-api-amqkulvgza-uc.a.run.app ([`/docs`](https://rag-api-amqkulvgza-uc.a.run.app/docs))
+>
+> Deployed on Cloud Run + Cloud SQL (pgvector) in `us-central1`; CD runs on every
+> push to `main` via GitHub Actions + Workload Identity Federation. Cloud Run
+> scales to zero, so the first request after idle cold-starts (~30–60s for the
+> model-loading API). See [ARCHITECTURE.md §4.1](ARCHITECTURE.md#41-gcp-deployment-this-project).
+
 A production-grade Retrieval-Augmented Generation system — the layer *after* the
 demo. It implements the three things that separate a tutorial from a system that
 survives production (per the reference blog post):
