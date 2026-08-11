@@ -1,0 +1,289 @@
+# Production RAG — Architecture
+
+This document describes a Retrieval-Augmented Generation system built to survive
+contact with production: a fresh, correct index over time; hybrid retrieval with
+reranking; and an observability layer that answers *“why did it retrieve that?”*
+It is the concrete implementation of the three things the reference blog argues
+separate a demo from a real system:
+
+1. an **indexing pipeline** with a document registry, content-hash change
+   detection, correct delete semantics, and alias-based zero-downtime deploys;
+2. a **retrieval layer** using hybrid search (vector + BM25) and cross-encoder
+   reranking;
+3. an **observability layer** with chunk-level attribution, retrieval-quality
+   metrics, and index-version → answer-quality correlation.
+
+---
+
+## 1. System overview
+
+```mermaid
+flowchart TB
+    subgraph Sources["Document sources"]
+        WIKI["Wikipedia REST API"]
+        ARX["arXiv API"]
+        FILES["Your files / DB / CMS"]
+    end
+
+    subgraph Indexing["Indexing pipeline (offline / background)"]
+        direction TB
+        HASH["Content-hash gate<br/>(skip unchanged docs)"]
+        CHUNK["Chunker<br/>recursive · semantic · structure-aware"]
+        EMB1["Embedding model<br/>(Gemini / hashing)"]
+        REG["Document registry<br/>doc_id → chunk ids, version, status"]
+    end
+
+    subgraph Store["Storage — pgvector (Postgres)"]
+        direction TB
+        VEC["chunks table<br/>vector(768) + text + metadata<br/>HNSW index (cosine)"]
+        META["meta table<br/>current_index_version (alias)"]
+    end
+
+    subgraph Query["Query pipeline (online, per request)"]
+        direction TB
+        EMB2["Embed query<br/>(same model — model-lock guard)"]
+        VS["Vector ANN search"]
+        BM["BM25 lexical search"]
+        RRF["Reciprocal Rank Fusion"]
+        RR["Cross-encoder reranker"]
+        ASM["Prompt assembly"]
+        LLM["LLM generate<br/>(Gemini)"]
+        JUDGE["LLM-as-judge<br/>faithfulness · relevance"]
+    end
+
+    subgraph Obs["Observability"]
+        TRACE["Trace store<br/>spans + chunk_retrieved events<br/>index_version attribution"]
+    end
+
+    UI["Streamlit UI"] --> API["FastAPI service"]
+    Sources --> HASH --> CHUNK --> EMB1 --> VEC
+    CHUNK --> REG
+    REG --> VEC
+    META -.alias.-> VS
+
+    API --> EMB2 --> VS --> RRF
+    EMB2 --> BM --> RRF
+    RRF --> RR --> ASM --> LLM --> JUDGE
+    VS -. events .-> TRACE
+    RR -. events .-> TRACE
+    LLM -. events .-> TRACE
+    JUDGE -. scores .-> TRACE
+    API --> TRACE
+```
+
+Two pipelines run at different times:
+
+* **Indexing (offline)** — ingest → hash-gate → chunk → embed → store, with the
+  registry tracking which chunk ids belong to each document version.
+* **Query (online)** — embed → vector + BM25 → RRF fuse → rerank → assemble →
+  generate → (sampled) judge, emitting one trace per request.
+
+---
+
+## 2. Component design
+
+### 2.1 Chunking (`ragcore/chunking.py`)
+
+Fixed-size character chunking cuts sentences in half and separates questions
+from answers. Three production strategies are implemented, each emitting
+`Chunk` objects with `doc_id, ordinal, section, char range, content_hash`:
+
+| Strategy    | How boundaries are chosen                                   | Best for                     |
+|-------------|-------------------------------------------------------------|------------------------------|
+| `recursive` | paragraph → sentence → char fallback, packed to a target    | general prose (default)      |
+| `structure` | Markdown headings; every chunk carries its parent section   | docs, manuals, contracts     |
+| `semantic`  | boundary where adjacent-sentence cosine drops below a thr.  | topic-shifting long articles |
+
+### 2.2 Embeddings & the model-lock guard (`ragcore/embeddings.py`)
+
+The embedding model is a long-term commitment: every stored vector must come
+from the same model used at query time. Each embedder exposes a stable `name`
+and `dim`; the `name` is **persisted on every chunk** and the retriever
+**asserts it matches the query model** before returning results, turning silent
+model drift into a loud `ModelMismatchError`.
+
+* `GeminiEmbedder` — `gemini-embedding-001`, 768-d (production default).
+* `HashingEmbedder` — deterministic, dependency-free (offline / CI). BM25 carries
+  lexical recall in this mode.
+
+### 2.3 Storage & registry (`ragcore/store/`)
+
+With pgvector, **one `chunks` table is both the vector store and the registry**
+(Postgres is both a relational and a vector DB). With an external vector DB
+(Qdrant/Pinecone) you keep this table minus `embedding` and let the vector DB
+hold vectors keyed by `chunk_vector_id` — the `Store` interface is unchanged.
+
+```sql
+CREATE TABLE chunks (
+    chunk_vector_id TEXT PRIMARY KEY,
+    doc_id          TEXT NOT NULL,
+    ordinal         INTEGER NOT NULL,
+    text            TEXT NOT NULL,
+    section         TEXT NOT NULL DEFAULT '',
+    content_hash    TEXT NOT NULL,
+    embedding       vector(768) NOT NULL,
+    embedding_model TEXT NOT NULL,           -- model-lock metadata
+    index_version   TEXT NOT NULL,           -- alias target
+    valid_from      TIMESTAMPTZ NOT NULL,    -- MVCC-style staged visibility
+    status          TEXT NOT NULL,           -- active | superseded | deleted
+    version         INTEGER NOT NULL,
+    indexed_at      TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX chunks_embedding_hnsw ON chunks
+    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 200);
+```
+
+Retrieval always filters `status='active' AND index_version=<alias> AND
+valid_from <= now()`. Two backends implement the identical interface:
+`PgVectorStore` (HNSW ANN, the scale path) and `SQLiteStore` (exact numpy search,
+for tests and laptops).
+
+### 2.4 Indexing operations (`ragcore/indexer.py`)
+
+* **Content-hash gate** — `should_reindex` skips a document whose text hash is
+  unchanged; metadata-only “updates” never trigger re-embedding.
+* **Correct reindex semantics** — an update is *find the doc’s active chunk ids →
+  delete them → re-chunk → re-embed → insert the (possibly different count of)
+  new chunks*, not an in-place row update.
+* **Delete semantics** — deletion soft-marks chunks `deleted` so they drop out of
+  retrieval immediately while staying auditable.
+* **Index versioning + alias swap** — `rebuild_shadow(new_version)` builds a
+  shadow index without touching the live alias; `promote(new_version)` flips the
+  `meta.current_index_version` alias atomically. No query ever sees a partial
+  index. This is the embedding-model-upgrade / full-rebuild path.
+* **Staged visibility** — `valid_from` in the future stages content that becomes
+  live only after that timestamp (Postgres-MVCC-like).
+
+### 2.5 Retrieval (`ragcore/retriever.py`, `bm25.py`, `reranker.py`)
+
+1. embed query (model-lock checked);
+2. dense ANN → candidate set A;
+3. BM25 lexical → candidate set B;
+4. **Reciprocal Rank Fusion** merges A and B: `score = Σ 1/(k + rank)`;
+5. **cross-encoder** (`ms-marco-MiniLM-L-6-v2`) reranks the top fused candidates,
+   scoring each (query, chunk) pair jointly;
+6. return top-k, each carrying vector / BM25 / fused / rerank scores.
+
+### 2.6 Generation & evaluation (`ragcore/generator.py`, `evaluation.py`)
+
+Generation is grounded: “answer only from the numbered context, cite `[n]`, say
+you don’t know otherwise.” An optional, sampled **LLM-as-judge** scores
+`faithfulness` and `answer_relevance` and logs them on the trace, giving a
+queryable quality signal.
+
+### 2.7 Observability (`ragcore/tracing.py`)
+
+Each request produces a nested span tree with RAG-specific primitives OTel’s
+generic model doesn’t capture:
+
+```
+rag_request (root)
+  ├── embedding.query          (model, dim)
+  ├── retrieval.vector_search  (top_k, num_results, index_version)
+  ├── retrieval.bm25           (num_results)
+  ├── retrieval.fuse           (method=RRF, rrf_k, num_candidates)
+  ├── retrieval.rerank         (model, num_input)
+  ├── retrieval.select         (chunk_retrieved events — attribution)
+  ├── prompt.assembly          (num_chunks_used, total_chars)
+  ├── llm.generate             (model, output_chars)
+  └── eval.judge               (faithfulness, answer_relevance, rationale)
+```
+
+Every retrieval span carries `index_version`, so a quality regression can be
+correlated to an index update: filter traces to the new version and compare
+faithfulness. Traces persist to SQLite (queryable: *“faithfulness < 0.7 in the
+last 7 days”*) and JSONL (shippable to any OTel backend). Chunk-level attribution
+is what lets you classify a bad answer as **wrong document** (index/model drift),
+**wrong section** (chunking boundary), or **context ignored** (a generation
+problem) — three failures that look identical from the outside.
+
+---
+
+## 3. Scaling to 1,000,000 documents
+
+The demo runs a few thousand chunks; the design scales to 1M documents
+(~10–15M chunks) without structural change. What changes is *configuration and
+topology*, not the code.
+
+### 3.1 Sizing
+
+| Quantity                    | Estimate at 1M docs                                   |
+|-----------------------------|-------------------------------------------------------|
+| Chunks (~12 / doc)          | ~12M                                                  |
+| Vector storage (768-d f32)  | 12M × 768 × 4 B ≈ **37 GB** raw vectors               |
+| HNSW graph overhead         | ~1.5–2× raw → ~60–75 GB → keep the index in RAM       |
+| Registry rows               | 12M rows in Postgres (trivial)                         |
+
+### 3.2 Vector index
+
+* **pgvector HNSW** handles tens of millions of vectors on one large Postgres
+  node. Tune `m` (16–32), `ef_construction` (200–400) at build time and
+  `hnsw.ef_search` (100–200) per query to trade recall vs. latency — all exposed
+  as `PG_HNSW_*` env vars.
+* Beyond a single node, move vectors to a dedicated ANN service
+  (**Qdrant / Milvus / Pinecone**) and keep the `chunks` registry in Postgres.
+  The `Store` interface already separates these concerns, so this is a new
+  `Store` implementation, not a rewrite.
+* **Quantization** (scalar/PQ) cuts memory 4–8× for a small recall hit — the path
+  to fitting 12M vectors in RAM economically.
+
+### 3.3 Sharding & throughput
+
+* **Shard** the vector index by tenant, corpus, or hash of `doc_id`; fan out
+  queries and merge with RRF (the same fusion already used for hybrid search).
+* Embedding is embarrassingly parallel — batch and run indexing workers
+  concurrently; the content-hash gate keeps re-index cost proportional to change,
+  not corpus size.
+* BM25 at this scale moves from the in-memory implementation here to **Postgres
+  full-text search** or an **OpenSearch/Elasticsearch** index; the retriever’s
+  fusion step is unchanged.
+
+### 3.4 Freshness & zero-downtime
+
+* Incremental upserts with `valid_from` stage new content without a rebuild.
+* Full re-embeds (model upgrades) use `rebuild_shadow` → validate against a
+  benchmark query set → `promote` (alias swap) → keep the old index warm for
+  rollback, then GC. This is the Elasticsearch alias pattern.
+
+### 3.5 Serving
+
+* FastAPI service scales horizontally (stateless); the DB/vector store is the
+  shared state.
+* Cache query embeddings and popular results; the cross-encoder is the main
+  latency cost — cap the rerank pool (default: `4 × top_k`).
+
+---
+
+## 4. Deployment topology
+
+```mermaid
+flowchart LR
+    U["Users"] --> LB["Load balancer"]
+    LB --> UI["Streamlit UI"]
+    LB --> API1["FastAPI replica 1"]
+    LB --> API2["FastAPI replica N"]
+    API1 --> PG[("Postgres + pgvector<br/>HNSW / registry")]
+    API2 --> PG
+    API1 --> EMB["Embedding API<br/>(Gemini)"]
+    API1 --> GEN["Generation + judge<br/>(Gemini)"]
+    subgraph Async["Indexing workers (async)"]
+        W1["Worker"] --> PG
+    end
+    Src["Document sources"] --> W1
+    API1 -. traces .-> OTEL["Trace backend<br/>(SQLite/JSONL → OTel)"]
+```
+
+---
+
+## 5. Failure modes this design defends against
+
+| Failure                                            | Defense                                                        |
+|----------------------------------------------------|---------------------------------------------------------------|
+| Serving stale/deleted content                      | registry + soft-delete + `status='active'` filter             |
+| Re-embedding unchanged docs (cost)                 | content-hash gate                                             |
+| Partial index after a crashed rebuild              | shadow index + atomic alias swap                              |
+| Querying model-B against model-A vectors           | `embedding_model` on every chunk + `ModelMismatchError`       |
+| “Why did it retrieve that?” is unanswerable        | `chunk_retrieved` attribution events per request              |
+| Quality dropped after an index update, cause unknown | `index_version` on every retrieval span                     |
+| Confidently wrong answers                          | LLM-as-judge faithfulness/relevance + queryable low-quality set |
+```

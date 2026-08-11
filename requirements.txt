@@ -1,0 +1,21 @@
+# --- serving ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic>=2.0
+
+# --- storage (pgvector backend) ---
+psycopg[binary]==3.2.3
+
+# --- embeddings / generation ---
+google-genai==1.5.0
+
+# --- retrieval / rerank ---
+numpy>=1.26
+sentence-transformers>=3.0    # cross-encoder reranker (pulls torch)
+
+# --- UI ---
+streamlit>=1.40
+requests>=2.31
+
+# --- dev ---
+pytest>=8.0

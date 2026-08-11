@@ -1,0 +1,25 @@
+# --- secrets: NEVER commit ---
+.env
+*.key
+
+# --- local data, indexes, logs (regenerable via scripts/) ---
+data/
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+*.log
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# --- os / editor ---
+.DS_Store
+.idea/
+.vscode/
