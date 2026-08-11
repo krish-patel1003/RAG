@@ -30,6 +30,18 @@ def test_delete_document_hides_it(rag_env):
     assert ix.store.active_chunk_ids("d1", ix.store.get_current_index_version()) == []
 
 
+def test_nul_bytes_are_stripped_before_indexing(rag_env):
+    # Crawled PDFs/pages can carry NUL (0x00), which Postgres TEXT rejects.
+    ix = Indexer()
+    dirty = "Intro about \x00 vector search.\x00 HNSW is fast.\x00"
+    rep = ix.index_document("d1", dirty)
+    assert not rep.get("skipped") and rep["chunks"] >= 1
+    # stored chunk text must be NUL-free
+    version = ix.store.get_current_index_version()
+    corpus = ix.store.active_corpus(version)
+    assert corpus and all("\x00" not in text for _, text in corpus)
+
+
 def test_alias_swap_promotes_shadow_index(rag_env):
     ix = Indexer()
     ix.index_document("d1", "Live content in version one.")

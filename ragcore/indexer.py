@@ -23,7 +23,7 @@ from .chunking import chunk_document
 from .config import settings
 from .embeddings import Embedder, get_embedder
 from .store import ChunkRecord, Store, get_store, utcnow
-from .types import content_hash
+from .types import content_hash, sanitize_text
 
 
 class Indexer:
@@ -50,6 +50,10 @@ class Indexer:
         valid_from=None,
     ) -> dict:
         """Insert or update one document.  Returns a small report."""
+        # Sanitize once, up front: every source (filesystem / web / bulk) funnels
+        # through here, so stripping NUL/control bytes here fixes them all and
+        # keeps the content hash stable against the stored (cleaned) text.
+        content = sanitize_text(content)
         version = index_version or self.store.get_current_index_version()
 
         if not force and not self.should_reindex(doc_id, content):

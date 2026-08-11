@@ -7,6 +7,25 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+def sanitize_text(text: str) -> str:
+    """Strip bytes that break storage/embedding.
+
+    Postgres ``TEXT`` columns cannot contain NUL (``0x00``), which crawled pages
+    and extracted PDFs (e.g. arXiv papers) sometimes include. We also drop the
+    other C0 control characters except tab/newline/carriage-return, which carry
+    no semantic value and only cause trouble downstream.
+    """
+    if not text:
+        return text
+    if "\x00" in text:
+        text = text.replace("\x00", "")
+    # Remove remaining non-printable C0 controls, keeping \t \n \r.
+    return "".join(
+        ch for ch in text
+        if ch in ("\t", "\n", "\r") or ord(ch) >= 0x20
+    )
+
+
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
