@@ -69,6 +69,12 @@ class Settings:
     trace_db_path: str = os.getenv("RAG_TRACE_DB", "data/traces.db")
     rationale_sample_rate: float = _float("RAG_RATIONALE_SAMPLE_RATE", 0.0)
 
+    # -- ingestion / research tool --------------------------------------
+    searxng_url: str = os.getenv("SEARXNG_URL", "http://localhost:8080")
+    # Science/paper aggregation across many engines can take ~30s; allow headroom.
+    search_timeout: int = _int("RAG_SEARCH_TIMEOUT", 45)
+    research_max_results: int = _int("RAG_RESEARCH_MAX_RESULTS", 10)
+
     # -- scale knobs (pgvector HNSW) ------------------------------------
     hnsw_m: int = _int("PG_HNSW_M", 16)
     hnsw_ef_construction: int = _int("PG_HNSW_EF_CONSTRUCTION", 200)

@@ -10,6 +10,7 @@ Public surface:
 
 from .config import settings
 from .indexer import Indexer
+from .ingest import Ingestor
 from .pipeline import RAGPipeline
 
-__all__ = ["settings", "Indexer", "RAGPipeline"]
+__all__ = ["settings", "Indexer", "Ingestor", "RAGPipeline"]

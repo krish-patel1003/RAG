@@ -17,6 +17,16 @@ services:
       timeout: 5s
       retries: 10
 
+  searxng:
+    image: searxng/searxng:latest
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8080/
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-please-change-this-secret}
+    volumes:
+      - ./deploy/searxng:/etc/searxng:rw
+    ports:
+      - "8080:8080"
+
   api:
     build: .
     environment:
@@ -24,11 +34,13 @@ services:
       DATABASE_URL: postgresql://rag:rag@db:5432/rag
       RAG_EMBEDDER: ${RAG_EMBEDDER:-gemini}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
       GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
       # Cross-encoder weights are baked into the image; set to 0 to disable.
       RAG_USE_RERANKER: ${RAG_USE_RERANKER:-1}
+      # Research tool: SearXNG endpoint reachable inside the compose network.
+      SEARXNG_URL: http://searxng:8080
     ports:
       - "8000:8000"
     depends_on:

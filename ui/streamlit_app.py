@@ -48,8 +48,8 @@ except Exception as exc:  # noqa: BLE001
     st.error(f"Cannot reach API at {API}: {exc}")
     st.stop()
 
-ask_tab, corpus_tab, traces_tab, quality_tab = st.tabs(
-    ["Ask", "Corpus", "Traces", "Quality"]
+ask_tab, sources_tab, corpus_tab, traces_tab, quality_tab = st.tabs(
+    ["Ask", "Add sources", "Corpus", "Traces", "Quality"]
 )
 
 # ---- Ask --------------------------------------------------------------
@@ -95,6 +95,60 @@ with ask_tab:
         )
         st.caption(f"trace id: `{res['trace_id']}` — open it in the Traces tab")
         st.session_state["last_trace"] = res["trace_id"]
+
+# ---- Add sources (filesystem + web research) --------------------------
+with sources_tab:
+    fs_col, web_col = st.columns(2)
+
+    with fs_col:
+        st.subheader("📁 From the filesystem")
+        st.caption("Load .txt / .md / .pdf / .html files. Re-ingesting is safe — "
+                   "unchanged files are skipped by the content-hash gate.")
+        root = st.text_input("Path (file or directory)", key="fs_root",
+                             placeholder="/path/to/docs")
+        glob = st.text_input("Glob", value="**/*", key="fs_glob")
+        if st.button("Ingest files", type="primary") and root:
+            with st.spinner("Loading, chunking, embedding, indexing..."):
+                rep = api_post("/ingest/filesystem",
+                               {"root": root, "glob": glob, "recursive": True})
+            if "detail" in rep:
+                st.error(rep["detail"])
+            else:
+                st.success(f"Indexed {rep.get('indexed',0)} / "
+                           f"skipped {rep.get('skipped',0)} / "
+                           f"{rep.get('chunks',0)} chunks")
+                st.dataframe(rep.get("details", []), use_container_width=True, hide_index=True)
+
+    with web_col:
+        st.subheader("🔎 Research the web (SearXNG + crawl4ai)")
+        st.caption("Find research papers and wikis, review them, then add the "
+                   "ones you want. Selected pages are crawled, cleaned, and indexed.")
+        q = st.text_input("Search query", key="research_q",
+                         placeholder="e.g. approximate nearest neighbor search")
+        mode = st.radio("Source", ["papers", "wikis", "web"], horizontal=True, key="research_mode")
+        if st.button("Search", key="research_search") and q:
+            with st.spinner("Searching via SearXNG..."):
+                data = api_post("/research/search", {"query": q, "mode": mode, "limit": 12})
+            st.session_state["research_results"] = data.get("results", [])
+
+        results = st.session_state.get("research_results", [])
+        if results:
+            st.markdown(f"**{len(results)} candidates** — pick the ones to add:")
+            chosen = []
+            for i, r in enumerate(results):
+                label = f"**{r['title'][:90]}**  \n`{r['engine']}` · {r['url'][:70]}"
+                if st.checkbox(label, key=f"pick_{i}"):
+                    chosen.append(r["url"])
+            if st.button("Add selected to corpus", type="primary", key="research_ingest") and chosen:
+                with st.spinner(f"Crawling + indexing {len(chosen)} page(s)..."):
+                    rep = api_post("/research/ingest", {"urls": chosen})
+                if "detail" in rep:
+                    st.error(rep["detail"])
+                else:
+                    st.success(f"Fetched {rep.get('fetched',0)} / "
+                               f"indexed {rep.get('indexed',0)} / "
+                               f"{rep.get('chunks',0)} chunks")
+                    st.dataframe(rep.get("details", []), use_container_width=True, hide_index=True)
 
 # ---- Corpus -----------------------------------------------------------
 with corpus_tab:

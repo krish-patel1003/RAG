@@ -1,0 +1,31 @@
+# Minimal SearXNG settings for the RAG research tool.
+# The key addition vs. defaults is enabling the JSON output format so the
+# research client can consume results programmatically.
+use_default_settings: true
+
+server:
+  # Overridden by SEARXNG_SECRET env in docker-compose; this is a fallback.
+  secret_key: "change-me-in-production"
+  limiter: false
+  image_proxy: false
+
+search:
+  # Allow the JSON API the research client depends on.
+  formats:
+    - html
+    - json
+  safe_search: 0
+
+engines:
+  - name: arxiv
+    disabled: false
+  - name: wikipedia
+    disabled: false
+  - name: wikidata
+    disabled: false
+  - name: semantic scholar
+    disabled: false
+  - name: crossref
+    disabled: false
+  - name: pubmed
+    disabled: false

@@ -13,6 +13,13 @@ google-genai==1.5.0
 numpy>=1.26
 sentence-transformers>=3.0    # cross-encoder reranker (pulls torch)
 
+# --- ingestion: filesystem + web research ---
+pypdf>=4.0                    # PDF text extraction (filesystem + crawled PDFs)
+beautifulsoup4>=4.12          # HTML extraction + crawl fallback
+lxml>=5.0
+crawl4ai>=0.9                 # web extraction (headless browser → clean markdown)
+# SearXNG runs as a container (see docker-compose.yml); no python dep needed.
+
 # --- UI ---
 streamlit>=1.40
 requests>=2.31

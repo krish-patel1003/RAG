@@ -13,7 +13,7 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from ragcore import Indexer, RAGPipeline
+from ragcore import Indexer, Ingestor, RAGPipeline
 from ragcore.config import settings
 from ragcore.tracing import TraceStore
 
@@ -23,6 +23,7 @@ STATE: dict = {}
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     STATE["indexer"] = Indexer()
+    STATE["ingestor"] = Ingestor(indexer=STATE["indexer"])
     STATE["pipeline"] = RAGPipeline()
     STATE["traces"] = TraceStore()
     yield
@@ -46,6 +47,22 @@ class QueryIn(BaseModel):
     question: str = Field(min_length=1)
     top_k: int = Field(default=settings.top_k, ge=1, le=20)
     judge: bool = True
+
+
+class FilesystemIn(BaseModel):
+    root: str = Field(min_length=1)
+    glob: str = "**/*"
+    recursive: bool = True
+
+
+class ResearchIn(BaseModel):
+    query: str = Field(min_length=1)
+    mode: str = Field(default="papers")  # papers | wikis | web
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class IngestUrlsIn(BaseModel):
+    urls: List[str] = Field(min_length=1)
 
 
 # ---- endpoints --------------------------------------------------------
@@ -82,6 +99,38 @@ def add_documents(body: BulkDocumentsIn) -> dict:
 @app.delete("/documents/{doc_id}")
 def delete_document(doc_id: str) -> dict:
     return STATE["indexer"].delete_document(doc_id)
+
+
+@app.post("/ingest/filesystem")
+def ingest_filesystem(body: FilesystemIn) -> dict:
+    try:
+        return STATE["ingestor"].ingest_filesystem(
+            body.root, glob=body.glob, recursive=body.recursive
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.post("/research/search")
+def research_search(body: ResearchIn) -> dict:
+    """Discovery only — returns candidates for the user to review. No indexing."""
+    try:
+        results = STATE["ingestor"].research_search(
+            body.query, mode=body.mode, limit=body.limit
+        )
+        return {"query": body.query, "mode": body.mode,
+                "results": [r.to_dict() for r in results]}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"search failed: {exc}") from exc
+
+
+@app.post("/research/ingest")
+def research_ingest(body: IngestUrlsIn) -> dict:
+    """Crawl + extract the selected URLs and add them to the corpus."""
+    try:
+        return STATE["ingestor"].ingest_urls(body.urls)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, str(exc)) from exc
 
 
 @app.post("/query")

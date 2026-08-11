@@ -29,6 +29,8 @@ ragcore/            the library (backend-agnostic)
   generator.py      grounded Gemini generation (+ extractive fallback)
   evaluation.py     LLM-as-judge (faithfulness / relevance)
   tracing.py        RAG-aware span tree → SQLite + JSONL
+  loaders/          filesystem loader · SearXNG search + crawl4ai extraction
+  ingest.py         Ingestor — ad-hoc addition through the same Indexer
   pipeline.py       end-to-end query orchestration
 app/main.py         FastAPI service
 ui/streamlit_app.py Streamlit demo UI
@@ -47,7 +49,36 @@ docker compose up --build
 * UI  → http://localhost:8501
 
 Postgres+pgvector is exposed on host port **5433** (5432 is often taken by a
-native Postgres).
+native Postgres). SearXNG (research tool) → http://localhost:8080.
+
+## Adding documents ad hoc (filesystem + web research)
+
+Beyond the bulk datasets, you can add documents any time. Every source flows
+through the **same** indexing pipeline (content-hash gated, versioned, queryable
+immediately — no rebuild). See [ARCHITECTURE.md](ARCHITECTURE.md) §2.5.
+
+**From the filesystem** (`.txt/.md/.pdf/.html`):
+
+```bash
+python scripts/ingest.py fs ./my-docs --glob "**/*.pdf"
+# API:  POST /ingest/filesystem  {"root":"./my-docs","glob":"**/*.pdf"}
+```
+
+**Web research** — find papers/wikis via SearXNG, review, then crawl+index the
+ones you want with crawl4ai:
+
+```bash
+python scripts/ingest.py search "approximate nearest neighbor search" --mode papers
+python scripts/ingest.py urls https://en.wikipedia.org/wiki/Okapi_BM25
+python scripts/ingest.py research "vector database indexing" --mode papers --top 3
+# API:  POST /research/search  {"query":"...","mode":"papers"}   # discovery only
+#       POST /research/ingest  {"urls":["https://..."]}          # crawl + index
+```
+
+Or use the **“Add sources”** tab in the UI: type a query, pick results, click
+*Add selected to corpus*. `mode` is `papers` (arXiv/Scholar/PubMed),
+`wikis` (Wikipedia), or `web`. Requires the SearXNG service running
+(`docker compose up -d searxng`).
 
 ## Quick start (local, no Docker)
 

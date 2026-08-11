@@ -154,7 +154,63 @@ for tests and laptops).
 * **Staged visibility** — `valid_from` in the future stages content that becomes
   live only after that timestamp (Postgres-MVCC-like).
 
-### 2.5 Retrieval (`ragcore/retriever.py`, `bm25.py`, `reranker.py`)
+### 2.5 Ad-hoc ingestion: sources, filesystem & web research (`ragcore/loaders/`, `ingest.py`)
+
+Beyond bulk dataset loading, documents can be added **one-off, at any time** from
+a user action — a local folder, or a web research session. The key design point:
+**ad-hoc ingestion is not a separate pipeline**. Every source is normalised to a
+`LoadedDoc` and handed to the *same* `Indexer.index_document`, so it inherits the
+content-hash gate, delete-then-insert reindex, model/version tagging, and — via
+`valid_from = now` — becomes queryable immediately, with **no index rebuild**.
+
+```mermaid
+flowchart LR
+    subgraph Loaders["Loaders (ragcore/loaders/)"]
+        FS["Filesystem loader<br/>txt · md · pdf · html"]
+        SX["SearXNG client<br/>papers · wikis · web"]
+        C4["crawl4ai extractor<br/>prune boilerplate → clean markdown"]
+    end
+    FSRC["Local folder / files"] --> FS
+    USER["User query<br/>(research tool)"] --> SX
+    SX -->|candidate URLs<br/>user selects| C4
+    FS --> LD["LoadedDoc<br/>doc_id · text · source · url"]
+    C4 --> LD
+    LD --> ING["Ingestor.ingest_docs"]
+    ING --> IDX["Indexer.index_document"]
+    IDX --> GATE{"content-hash<br/>changed?"}
+    GATE -->|no| SKIP["skip (no re-embed)"]
+    GATE -->|yes| PIPE["chunk → embed →<br/>registry → store<br/>(valid_from = now)"]
+    PIPE --> Q["immediately queryable"]
+```
+
+**Filesystem** (`loaders/filesystem.py`) — walks a path/glob, extracts text
+format-aware (plain text; HTML via BeautifulSoup; PDF via pypdf), and assigns a
+stable `doc_id = file:<relative-path>` so re-ingesting updates in place.
+
+**Web research** — two stages, deliberately split so a human reviews before
+anything is indexed:
+
+1. **Discovery** (`SearXNGClient`) queries a self-hosted **SearXNG** JSON API.
+   Research modes map to SearXNG parameters: `papers → categories=science`
+   (arXiv, Semantic Scholar, Google Scholar, PubMed, Crossref), `wikis →`
+   Wikipedia engine (with a general-search `wikipedia.org` fallback), `web →`
+   general. The endpoint returns candidates only — **nothing is indexed yet**.
+2. **Extraction + ingest** (`Crawler`, `load_urls`) crawls the *selected* URLs
+   with **crawl4ai**. A `PruningContentFilter` plus `excluded_tags`
+   (nav/header/footer/aside) drop site chrome; the result's *fit* markdown is
+   then flattened (links → anchor text, images and residual nav lines removed)
+   so chunks are clean prose rather than menu boilerplate — this materially
+   improves both embedding and cross-encoder rerank quality. crawl4ai is the
+   primary extractor; a urllib + BeautifulSoup (and pypdf for PDFs) path is the
+   fallback when crawl4ai/Playwright isn't installed. `doc_id` is derived from
+   the URL: `arxiv:<id>`, `wiki:<Title>`, or `web:<slug>`, so a crawled arXiv
+   paper *deduplicates* against the same paper from the bulk dataset.
+
+Exposed as `POST /ingest/filesystem`, `POST /research/search` (discovery),
+`POST /research/ingest` (crawl + index), the **“Add sources”** UI tab, and
+`scripts/ingest.py`. SearXNG runs as a compose service; crawl4ai runs in-process.
+
+### 2.6 Retrieval (`ragcore/retriever.py`, `bm25.py`, `reranker.py`)
 
 1. embed query (model-lock checked);
 2. dense ANN → candidate set A;
@@ -164,14 +220,14 @@ for tests and laptops).
    scoring each (query, chunk) pair jointly;
 6. return top-k, each carrying vector / BM25 / fused / rerank scores.
 
-### 2.6 Generation & evaluation (`ragcore/generator.py`, `evaluation.py`)
+### 2.7 Generation & evaluation (`ragcore/generator.py`, `evaluation.py`)
 
 Generation is grounded: “answer only from the numbered context, cite `[n]`, say
 you don’t know otherwise.” An optional, sampled **LLM-as-judge** scores
 `faithfulness` and `answer_relevance` and logs them on the trace, giving a
 queryable quality signal.
 
-### 2.7 Observability (`ragcore/tracing.py`)
+### 2.8 Observability (`ragcore/tracing.py`)
 
 Each request produces a nested span tree with RAG-specific primitives OTel’s
 generic model doesn’t capture:
