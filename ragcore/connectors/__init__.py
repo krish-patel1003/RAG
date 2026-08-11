@@ -1,11 +1,12 @@
-"""Document loaders / sources.
+"""Source connectors for incremental ingestion.
 
-A *loader* turns some external source (the local filesystem, a web page, a
-search engine result) into :class:`LoadedDoc` objects. Loaders never touch the
-index directly — they hand documents to :class:`~ragcore.ingest.Ingestor`, which
-runs them through the same online indexing pipeline (chunk → embed → registry →
-store) used for every other document. This keeps ad-hoc ingestion identical to
-bulk ingestion: content-hash gated, versioned, and immediately queryable.
+A *connector* turns some external source (the local filesystem, a web page, a
+search engine result) into :class:`LoadedDoc` objects. Connectors never touch
+the index directly — they hand documents to :class:`~ragcore.ingest.Ingestor`,
+which runs them through the same online indexing pipeline (chunk → embed →
+registry → store) used for every other document. This keeps *incremental
+ingestion* (adding documents at runtime) identical to bulk ingestion:
+content-hash gated, versioned, and immediately queryable — no index rebuild.
 """
 
 from __future__ import annotations

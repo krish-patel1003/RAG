@@ -4,10 +4,11 @@
 use_default_settings: true
 
 server:
-  # Overridden by SEARXNG_SECRET env in docker-compose; this is a fallback.
-  secret_key: "change-me-in-production"
+  # The official image entrypoint substitutes SEARXNG_SECRET for this placeholder.
+  secret_key: "ultrasecretkey"
   limiter: false
   image_proxy: false
+  bind_address: "0.0.0.0:8080"
 
 search:
   # Allow the JSON API the research client depends on.

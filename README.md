@@ -29,8 +29,8 @@ ragcore/            the library (backend-agnostic)
   generator.py      grounded Gemini generation (+ extractive fallback)
   evaluation.py     LLM-as-judge (faithfulness / relevance)
   tracing.py        RAG-aware span tree → SQLite + JSONL
-  loaders/          filesystem loader · SearXNG search + crawl4ai extraction
-  ingest.py         Ingestor — ad-hoc addition through the same Indexer
+  connectors/       filesystem connector · SearXNG search + crawl4ai extraction
+  ingest.py         Ingestor — incremental addition through the same Indexer
   pipeline.py       end-to-end query orchestration
 app/main.py         FastAPI service
 ui/streamlit_app.py Streamlit demo UI
@@ -51,11 +51,13 @@ docker compose up --build
 Postgres+pgvector is exposed on host port **5433** (5432 is often taken by a
 native Postgres). SearXNG (research tool) → http://localhost:8080.
 
-## Adding documents ad hoc (filesystem + web research)
+## Incremental ingestion (filesystem + web research)
 
-Beyond the bulk datasets, you can add documents any time. Every source flows
-through the **same** indexing pipeline (content-hash gated, versioned, queryable
-immediately — no rebuild). See [ARCHITECTURE.md](ARCHITECTURE.md) §2.5.
+Beyond the bulk datasets, you can add documents at runtime via **source
+connectors**. Every source flows through the **same** indexing pipeline
+(content-hash gated, versioned, queryable immediately — no rebuild). The
+web-research connector is *on-demand corpus expansion*. See
+[ARCHITECTURE.md](ARCHITECTURE.md) §2.5.
 
 **From the filesystem** (`.txt/.md/.pdf/.html`):
 

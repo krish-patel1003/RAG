@@ -1,4 +1,4 @@
-"""Filesystem loader.
+"""Filesystem connector.
 
 Walk a directory (or match a glob) and turn supported files into
 :class:`LoadedDoc` objects. Text extraction is format-aware:

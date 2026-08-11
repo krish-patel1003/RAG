@@ -1,0 +1,62 @@
+name: Deploy to Cloud Run
+
+# Continuous delivery: on every push to main, build immutable per-commit images
+# via Cloud Build and roll them onto the existing Cloud Run services. Auth uses
+# Workload Identity Federation (keyless) locked to this repo — no service-account
+# keys are stored anywhere.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch: {}
+
+env:
+  PROJECT_ID: ai-storybook-studio-496817
+  REGION: us-central1
+  AR: us-central1-docker.pkg.dev/ai-storybook-studio-496817/rag
+  RUNTIME_SA: rag-runtime@ai-storybook-studio-496817.iam.gserviceaccount.com
+  WIF_PROVIDER: projects/741258687011/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+  DEPLOYER_SA: rag-deployer@ai-storybook-studio-496817.iam.gserviceaccount.com
+
+# Required for keyless WIF auth.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build + push images (Cloud Build)
+        run: |
+          gcloud builds submit --project="$PROJECT_ID" \
+            --config cloudbuild.yaml \
+            --substitutions=_TAG="${GITHUB_SHA}"
+
+      - name: Deploy rag-api
+        run: |
+          gcloud run deploy rag-api --project="$PROJECT_ID" --region="$REGION" \
+            --image "$AR/rag-api:${GITHUB_SHA}" --quiet
+
+      - name: Deploy rag-ui
+        run: |
+          gcloud run deploy rag-ui --project="$PROJECT_ID" --region="$REGION" \
+            --image "$AR/rag-ui:${GITHUB_SHA}" --quiet
+
+      - name: Show URLs
+        run: |
+          echo "api: $(gcloud run services describe rag-api --project=$PROJECT_ID --region=$REGION --format='value(status.url)')"
+          echo "ui:  $(gcloud run services describe rag-ui  --project=$PROJECT_ID --region=$REGION --format='value(status.url)')"

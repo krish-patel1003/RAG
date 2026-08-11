@@ -1,13 +1,13 @@
-"""Ingestion service — the single entry point for ad-hoc document addition.
+"""Ingestion service — the single entry point for incremental document addition.
 
 Whatever the source (filesystem, a crawled URL, a research result), a document
-ends up here as a :class:`~ragcore.loaders.LoadedDoc` and is pushed through the
+ends up here as a :class:`~ragcore.connectors.LoadedDoc` and is pushed through the
 **same online indexing pipeline** every other document uses:
 
     LoadedDoc → Indexer.index_document → content-hash gate → chunk → embed →
                 registry (doc_id → chunk ids, version) → vector store (valid_from=now)
 
-Because it reuses :class:`~ragcore.indexer.Indexer`, ad-hoc ingestion inherits
+Because it reuses :class:`~ragcore.indexer.Indexer`, incremental ingestion inherits
 all of its guarantees for free: unchanged docs are skipped, updates delete the
 old chunks before inserting new ones, every chunk is tagged with the embedding
 model and current index version, and the new content is queryable immediately
@@ -19,9 +19,9 @@ from __future__ import annotations
 from typing import Iterable, List, Optional
 
 from .indexer import Indexer
-from .loaders import LoadedDoc, SearchResult
-from .loaders.filesystem import load_filesystem
-from .loaders.web import SearXNGClient, load_urls
+from .connectors import LoadedDoc, SearchResult
+from .connectors.filesystem import load_filesystem
+from .connectors.web import SearXNGClient, load_urls
 
 
 class Ingestor:

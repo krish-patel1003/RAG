@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from ragcore.loaders.filesystem import load_filesystem
-from ragcore.loaders.web import SearXNGClient, _clean, doc_id_from_url
+from ragcore.connectors.filesystem import load_filesystem
+from ragcore.connectors.web import SearXNGClient, _clean, doc_id_from_url
 
 
 # ---- filesystem -------------------------------------------------------

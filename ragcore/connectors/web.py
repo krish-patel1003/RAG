@@ -1,4 +1,4 @@
-"""Web research loader: SearXNG (discovery) + crawl4ai (extraction).
+"""Web-research connector (on-demand corpus expansion): SearXNG + crawl4ai.
 
 Two stages, deliberately separated so a human can review before anything is
 indexed:

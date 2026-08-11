@@ -154,19 +154,20 @@ for tests and laptops).
 * **Staged visibility** — `valid_from` in the future stages content that becomes
   live only after that timestamp (Postgres-MVCC-like).
 
-### 2.5 Ad-hoc ingestion: sources, filesystem & web research (`ragcore/loaders/`, `ingest.py`)
+### 2.5 Incremental ingestion: source connectors, filesystem & web research (`ragcore/connectors/`, `ingest.py`)
 
-Beyond bulk dataset loading, documents can be added **one-off, at any time** from
-a user action — a local folder, or a web research session. The key design point:
-**ad-hoc ingestion is not a separate pipeline**. Every source is normalised to a
-`LoadedDoc` and handed to the *same* `Indexer.index_document`, so it inherits the
-content-hash gate, delete-then-insert reindex, model/version tagging, and — via
+Beyond bulk dataset loading, documents can be added **at runtime, at any time**
+from a user action — a local folder, or a web research session (*on-demand corpus
+expansion*). The key design point: **incremental ingestion is not a separate
+pipeline**. Every source *connector* normalises its input to a `LoadedDoc` and
+hands it to the *same* `Indexer.index_document`, so it inherits the content-hash
+gate, delete-then-insert reindex, model/version tagging, and — via
 `valid_from = now` — becomes queryable immediately, with **no index rebuild**.
 
 ```mermaid
 flowchart LR
-    subgraph Loaders["Loaders (ragcore/loaders/)"]
-        FS["Filesystem loader<br/>txt · md · pdf · html"]
+    subgraph Connectors["Source connectors (ragcore/connectors/)"]
+        FS["Filesystem connector<br/>txt · md · pdf · html"]
         SX["SearXNG client<br/>papers · wikis · web"]
         C4["crawl4ai extractor<br/>prune boilerplate → clean markdown"]
     end
@@ -183,7 +184,7 @@ flowchart LR
     PIPE --> Q["immediately queryable"]
 ```
 
-**Filesystem** (`loaders/filesystem.py`) — walks a path/glob, extracts text
+**Filesystem** (`connectors/filesystem.py`) — walks a path/glob, extracts text
 format-aware (plain text; HTML via BeautifulSoup; PDF via pypdf), and assigns a
 stable `doc_id = file:<relative-path>` so re-ingesting updates in place.
 
@@ -328,6 +329,67 @@ flowchart LR
     Src["Document sources"] --> W1
     API1 -. traces .-> OTEL["Trace backend<br/>(SQLite/JSONL → OTel)"]
 ```
+
+### 4.1 GCP deployment (this project)
+
+The generic topology maps cleanly onto managed GCP services. Everything is
+deployed under a dedicated **`rag-*`** namespace inside the shared
+`ai-storybook-studio` project, fully isolated from the existing `storybook-*`
+infrastructure (separate Cloud Run services, a **separate Cloud SQL instance**,
+its own Artifact Registry repo, secrets, and service accounts — nothing shared,
+nothing mutated). Region: **us-central1**.
+
+```mermaid
+flowchart TB
+    U["Users"] --> UI["Cloud Run: rag-ui<br/>(Streamlit)"]
+    U --> API["Cloud Run: rag-api<br/>(FastAPI + reranker + crawl4ai)"]
+    UI -->|RAG_API_URL| API
+    API -->|Cloud SQL connector<br/>unix socket| SQL[("Cloud SQL: rag-db<br/>Postgres 16 + pgvector")]
+    API -->|research: SearXNG JSON| SX["Cloud Run: rag-searxng"]
+    API -->|embed / generate / judge| GEM["Gemini API"]
+    API -.reads.-> SEC["Secret Manager<br/>rag-gemini-api-key · rag-db-password"]
+    API -.runs as.-> RSA["SA: rag-runtime<br/>cloudsql.client · secretAccessor"]
+
+    subgraph CICD["Continuous delivery"]
+        GH["GitHub push → main"] --> GHA["GitHub Actions"]
+        GHA -->|WIF (keyless)| DSA["SA: rag-deployer"]
+        DSA --> CB["Cloud Build"]
+        CB --> AR["Artifact Registry: rag/*<br/>rag-api · rag-ui (per-commit SHA)"]
+        AR --> API
+        AR --> UI
+    end
+```
+
+| Component | GCP service | Name | Notes |
+|-----------|-------------|------|-------|
+| API | Cloud Run | `rag-api` | FastAPI; 2 vCPU / 2–4 GB (torch reranker + Playwright); Cloud SQL attached; runs as `rag-runtime` |
+| UI | Cloud Run | `rag-ui` | Streamlit; light image; talks to `rag-api` via `RAG_API_URL` |
+| Research | Cloud Run | `rag-searxng` | upstream `searxng/searxng` image; JSON API |
+| Vector store + registry | Cloud SQL | `rag-db` | Postgres 16 + pgvector HNSW; **dedicated instance** |
+| Images | Artifact Registry | `rag/` | `rag-api`, `rag-ui`, tagged by commit SHA |
+| Secrets | Secret Manager | `rag-gemini-api-key`, `rag-db-password` | injected into `rag-api` at runtime |
+| Runtime identity | IAM SA | `rag-runtime` | `cloudsql.client`, `secretmanager.secretAccessor` only |
+| CD identity | IAM SA | `rag-deployer` | assumed by GitHub Actions via Workload Identity Federation (no keys) |
+
+**Connectivity.** `rag-api` reaches `rag-db` through the built-in Cloud Run
+**Cloud SQL connector** (IAM-authenticated unix socket
+`/cloudsql/<instance>`), so the database needs no authorized networks and the
+existing `storybook-connector` VPC connector is left untouched. `DATABASE_URL`
+uses that socket path as the host.
+
+**CD (keyless).** A push to `main` triggers `.github/workflows/deploy.yml`,
+which federates a GitHub OIDC token to the `rag-deployer` service account via
+**Workload Identity Federation** (pool/provider locked to
+`krish-patel1003/RAG`). It builds per-commit images with Cloud Build and rolls
+them onto Cloud Run with `gcloud run deploy --image …:<sha>`, which preserves the
+service's env/secret/Cloud-SQL configuration from the prior revision. No
+service-account keys exist anywhere — important because the repo is public.
+
+**Scaling knobs** carry over: Cloud Run `--min-instances`/`--max-instances` and
+`--concurrency` set horizontal scale; `rag-db` is the shared state and moves to a
+larger tier (or read replicas) as the corpus grows toward the 1M-doc target in
+§3, at which point the vector index can graduate to a dedicated ANN service
+behind the same `Store` interface.
 
 ---
 

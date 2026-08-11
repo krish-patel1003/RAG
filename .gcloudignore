@@ -1,0 +1,17 @@
+# Keep the Cloud Build upload context small.
+.git/
+.github/
+data/
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+*.log
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+deploy/searxng/
+tests/
+.env

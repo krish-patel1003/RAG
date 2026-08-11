@@ -29,8 +29,8 @@ def rag_env(tmp_path, monkeypatch):
         "ragcore.embeddings", "ragcore.store", "ragcore.store.sqlite_store",
         "ragcore.bm25", "ragcore.chunking", "ragcore.reranker", "ragcore.retriever",
         "ragcore.generator", "ragcore.evaluation", "ragcore.tracing",
-        "ragcore.indexer", "ragcore.loaders", "ragcore.loaders.filesystem",
-        "ragcore.loaders.web", "ragcore.ingest", "ragcore.pipeline", "ragcore",
+        "ragcore.indexer", "ragcore.connectors", "ragcore.connectors.filesystem",
+        "ragcore.connectors.web", "ragcore.ingest", "ragcore.pipeline", "ragcore",
     ]:
         mod = importlib.import_module(name)
         importlib.reload(mod)
